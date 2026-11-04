@@ -315,6 +315,60 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
           status: 'success',
           detail: `branch=${branch}`,
         })
+
+        // The OTHER (`no`) branch can optionally be delayed and/or run
+        // at most once per contact. Both are enforced here, before the
+        // branch is recursed into.
+        if (branch === 'no') {
+          const delayMinutes =
+            typeof cfg.else_delay_minutes === 'number' &&
+            Number.isFinite(cfg.else_delay_minutes) &&
+            cfg.else_delay_minutes > 0
+              ? cfg.else_delay_minutes
+              : 0
+
+          if (cfg.else_once_per_contact) {
+            const claimed = await claimElseBranchOnce(args)
+            if (!claimed) {
+              results.push({
+                step_id: step.id,
+                step_type: 'condition',
+                status: 'success',
+                detail: 'else branch skipped (already ran once for this contact)',
+              })
+              continue
+            }
+          }
+
+          if (delayMinutes > 0) {
+            // Park the branch scope (not the current scope) and let the
+            // cron resume it. Unlike returning here, `continue` lets any
+            // steps AFTER this condition run now — the same behaviour as
+            // a `wait` placed inside the branch, which also does not
+            // block the parent scope.
+            await db.from('automation_pending_executions').insert({
+              automation_id: args.automation.id,
+              account_id: args.automation.account_id,
+              user_id: args.automation.user_id,
+              contact_id: args.contactId,
+              log_id: args.logId,
+              parent_step_id: step.id,
+              branch: 'no',
+              next_step_position: 0,
+              context: args.context,
+              run_at: new Date(Date.now() + delayMinutes * 60_000).toISOString(),
+              status: 'pending',
+            })
+            results.push({
+              step_id: step.id,
+              step_type: 'condition',
+              status: 'success',
+              detail: `else branch scheduled in ${delayMinutes} minute(s)`,
+            })
+            continue
+          }
+        }
+
         // Recurse into the chosen branch at position 0 (children use their
         // own ordering within the branch scope).
         await executeStepsFrom({
@@ -354,6 +408,34 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
     // Nested branch — just append results; parent scope decides final status.
     await appendResults(args.logId, results, null, errorMessage)
   }
+}
+
+/**
+ * Atomically claim the one-shot OTHER branch for a contact. The
+ * UNIQUE(automation_id, contact_id, branch_key) constraint is the lock:
+ * the first trigger inserts, while concurrent or later triggers hit
+ * 23505 and are skipped. Non-conflict errors (e.g. a fork that has not
+ * run migration 048 yet) fail open so a missing table cannot silently
+ * disable the automation.
+ *
+ * The key is deliberately just `no`, not `<step id>:no`: the builder
+ * recreates step rows on every save, so ids are not stable. Keying on
+ * the automation + contact + branch keeps the guard intact across edits.
+ */
+async function claimElseBranchOnce(args: ExecuteArgs): Promise<boolean> {
+  if (!args.contactId) return true
+  const { error } = await supabaseAdmin()
+    .from('automation_branch_runs')
+    .insert({
+      automation_id: args.automation.id,
+      account_id: args.automation.account_id,
+      contact_id: args.contactId,
+      branch_key: 'no',
+    })
+  if (!error) return true
+  if (error.code === '23505') return false
+  console.error('[automations] else-once claim failed; allowing run:', error)
+  return true
 }
 
 async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string> {

@@ -206,6 +206,39 @@ describe("validateStepsForActivation", () => {
       "steps[0].subject",
     ]);
   });
+
+  it("accepts a message_content condition without an operand", () => {
+    // message_content has no operand field in the builder and the engine
+    // ignores it, so an empty operand must not block activation.
+    const issues = validateStepsForActivation([
+      {
+        step_type: "condition",
+        step_config: {
+          subject: "message_content",
+          value: "order status",
+          operator: "exact_match",
+        },
+      },
+    ]);
+    expect(issues).toEqual([]);
+  });
+
+  it("still requires a value for a message_content condition", () => {
+    const issues = validateStepsForActivation([
+      {
+        step_type: "condition",
+        step_config: { subject: "message_content", operator: "exact_match" },
+      },
+    ]);
+    expect(issues.map((i) => i.path)).toEqual(["steps[0].value"]);
+  });
+
+  it("still requires an operand for a tag_presence condition", () => {
+    const issues = validateStepsForActivation([
+      { step_type: "condition", step_config: { subject: "tag_presence" } },
+    ]);
+    expect(issues.map((i) => i.path)).toEqual(["steps[0].operand"]);
+  });
 });
 
 describe("validateTriggerForActivation", () => {

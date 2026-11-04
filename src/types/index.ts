@@ -657,6 +657,19 @@ export interface ConditionStepConfig extends ConditionPredicate {
    * legacy two-branch conditions.
    */
   else_ifs?: ConditionPredicate[];
+  /**
+   * Delay the OTHER (`no`) branch by this many minutes before it runs.
+   * `0`/absent means run immediately. The engine parks a pending
+   * execution and the cron resumes it, so a long delay does not hold
+   * the webhook open.
+   */
+  else_delay_minutes?: number;
+  /**
+   * Run the OTHER (`no`) branch at most once per contact for this
+   * automation, so a trigger that fires on every inbound message does
+   * not repeat the else action. Persisted in automation_branch_runs.
+   */
+  else_once_per_contact?: boolean;
 }
 
 export interface SendWebhookStepConfig {

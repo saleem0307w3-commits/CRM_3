@@ -21,6 +21,9 @@ const h = vi.hoisted(() => ({
     upsertCalls: [] as { table: string; payload: unknown }[],
     logInserts: [] as Record<string, unknown>[],
     logUpdates: [] as Record<string, unknown>[],
+    pendingInserts: [] as Record<string, unknown>[],
+    branchRunInserts: [] as Record<string, unknown>[],
+    branchRuns: new Set<string>(),
   },
 }));
 
@@ -49,6 +52,30 @@ vi.mock("./admin-client", () => {
     if (table === "contact_custom_values") {
       if (type === "upsert") {
         state.upsertCalls.push({ table, payload: ops.payload });
+        return { data: null, error: null };
+      }
+      return { data: null, error: null };
+    }
+    if (table === "automation_pending_executions") {
+      if (type === "insert") {
+        state.pendingInserts.push(ops.payload as Record<string, unknown>);
+        return { data: null, error: null };
+      }
+      return { data: null, error: null };
+    }
+    if (table === "automation_branch_runs") {
+      if (type === "insert") {
+        const p = ops.payload as {
+          automation_id: string;
+          contact_id: string;
+          branch_key: string;
+        };
+        const key = `${p.automation_id}|${p.contact_id}|${p.branch_key}`;
+        if (state.branchRuns.has(key)) {
+          return { data: null, error: { code: "23505", message: "duplicate" } };
+        }
+        state.branchRuns.add(key);
+        state.branchRunInserts.push(p);
         return { data: null, error: null };
       }
       return { data: null, error: null };
@@ -150,6 +177,9 @@ beforeEach(() => {
   h.state.upsertCalls = [];
   h.state.logInserts = [];
   h.state.logUpdates = [];
+  h.state.pendingInserts = [];
+  h.state.branchRunInserts = [];
+  h.state.branchRuns.clear();
 });
 
 describe("runAutomationsForTrigger — tenant isolation", () => {
@@ -781,6 +811,88 @@ describe("condition steps — IF / ELSE IF / OTHER branch resolution", () => {
     await run("only GAMMA here");
 
     expect(companyWrites()).toEqual(["ELSE_IF_2_RAN"]);
+  });
+});
+
+describe("condition steps — OTHER branch delay + once-per-contact", () => {
+  const COND_ID = "cond-delay";
+
+  function conditionStep(extra: Record<string, unknown>) {
+    return {
+      id: COND_ID,
+      automation_id: "a1",
+      step_type: "condition",
+      position: 0,
+      parent_step_id: null,
+      step_config: {
+        subject: "message_content",
+        value: "hello",
+        operator: "contains",
+        ...extra,
+      },
+    };
+  }
+
+  function otherBranchStep() {
+    return {
+      id: "b-no",
+      automation_id: "a1",
+      step_type: "update_contact_field",
+      position: 0,
+      parent_step_id: COND_ID,
+      branch: "no",
+      step_config: { field: "company", value: "OTHER_RAN" },
+    };
+  }
+
+  function companyWrites(): string[] {
+    return h.state.updateCalls
+      .filter((c) => c.table === "contacts")
+      .map((c) => (c.payload as { company: string }).company);
+  }
+
+  it("schedules the OTHER branch after the configured delay without running it now", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [conditionStep({ else_delay_minutes: 5 }), otherBranchStep()];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "new_message_received",
+      contactId: "c1",
+      context: { message_text: "unrelated" },
+    });
+
+    expect(companyWrites()).toEqual([]);
+    expect(h.state.pendingInserts).toHaveLength(1);
+    expect(h.state.pendingInserts[0]).toMatchObject({
+      parent_step_id: COND_ID,
+      branch: "no",
+      next_step_position: 0,
+      contact_id: "c1",
+    });
+    const runAt = Date.parse(h.state.pendingInserts[0].run_at as string);
+    expect(runAt - Date.now()).toBeGreaterThan(4 * 60_000);
+  });
+
+  it("runs the OTHER branch only once per contact", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [conditionStep({ else_once_per_contact: true }), otherBranchStep()];
+
+    const dispatch = () =>
+      runAutomationsForTrigger({
+        accountId: ACCOUNT,
+        triggerType: "new_message_received",
+        contactId: "c1",
+        context: { message_text: "unrelated" },
+      });
+
+    await dispatch();
+    await dispatch();
+
+    expect(companyWrites()).toEqual(["OTHER_RAN"]);
+    expect(h.state.branchRunInserts).toHaveLength(1);
   });
 });
 

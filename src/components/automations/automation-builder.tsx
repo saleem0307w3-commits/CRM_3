@@ -1685,6 +1685,41 @@ function StepEditor({
             <Plus className="h-3.5 w-3.5" />
             {t("config.addElseIf")}
           </Button>
+          <div className="mt-3 rounded-md border border-border p-2">
+            <FieldBlock label={t("config.elseDelayLabel")}>
+              <Input
+                type="number"
+                min={0}
+                value={
+                  typeof cfg.else_delay_minutes === "number"
+                    ? cfg.else_delay_minutes
+                    : 0
+                }
+                onChange={(e) => {
+                  const n = Number(e.target.value)
+                  set({
+                    else_delay_minutes:
+                      Number.isFinite(n) && n > 0 ? n : 0,
+                  })
+                }}
+                className="bg-muted text-foreground"
+              />
+            </FieldBlock>
+            <p className="text-muted-foreground mb-2 text-[11px]">
+              {t("config.elseDelayHint")}
+            </p>
+            <label className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-muted-foreground">
+                {t("config.elseOnceLabel")}
+              </span>
+              <Switch
+                checked={!!cfg.else_once_per_contact}
+                onCheckedChange={(v) =>
+                  set({ else_once_per_contact: !!v })
+                }
+              />
+            </label>
+          </div>
         </>
       )
     }

@@ -140,6 +140,26 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
       elseIfs.forEach((ei, i) => {
         validatePredicate(ei as Record<string, unknown>, `${path}.else_ifs[${i}]`, issues)
       })
+      if (
+        c.else_delay_minutes != null &&
+        (typeof c.else_delay_minutes !== 'number' ||
+          !Number.isFinite(c.else_delay_minutes) ||
+          c.else_delay_minutes < 0)
+      ) {
+        issues.push({
+          path: `${path}.else_delay_minutes`,
+          message: 'else delay must be a non-negative number of minutes',
+        })
+      }
+      if (
+        c.else_once_per_contact != null &&
+        typeof c.else_once_per_contact !== 'boolean'
+      ) {
+        issues.push({
+          path: `${path}.else_once_per_contact`,
+          message: 'else once-per-contact must be true or false',
+        })
+      }
       break
     case 'send_webhook':
       if (!nonEmpty(c.url)) {
@@ -235,7 +255,13 @@ function validatePredicate(
   if (!nonEmpty(c.subject)) {
     issues.push({ path: `${path}.subject`, message: 'condition subject is required' })
   }
-  if (!nonEmpty(c.operand)) {
+  // `message_content` compares the incoming text to `value`; it has no
+  // operand (the builder hides that field for this subject and the engine
+  // ignores it). Requiring it here rejected valid "message content" +
+  // "exact match" conditions with a misleading "condition operand is
+  // required" error. Every other subject (tag, contact field, time of day)
+  // genuinely needs one.
+  if (c.subject !== 'message_content' && !nonEmpty(c.operand)) {
     issues.push({ path: `${path}.operand`, message: 'condition operand is required' })
   }
   if (c.subject === 'message_content' && !nonEmpty(c.value)) {
